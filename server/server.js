@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/error');
 const authRoutes = require('./routes/authRoutes');
@@ -16,6 +18,18 @@ dotenv.config();
 connectDB();
 
 const app = express();
+
+// Trust the first proxy hop (required for correct IP detection on Render, etc.)
+app.set('trust proxy', 1);
+
+// Middleware: Security headers via Helmet
+// Allow cross-origin images (Unsplash, etc.) and keep CORS working with the client.
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false, // CSP managed by the client (Vite)
+  })
+);
 
 // Middleware: CORS
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
@@ -41,6 +55,26 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
 }
 
+// Rate Limiters ---------------------------------------------------------------
+
+// Auth limiter: 20 requests per 15 minutes per IP (login & register)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many attempts, please try again later.' },
+});
+
+// General API limiter: 300 requests per 15 minutes per IP
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many requests, please try again later.' },
+});
+
 // Health check route
 app.get('/api/health', (req, res) => {
   res.status(200).json({
@@ -52,10 +86,10 @@ app.get('/api/health', (req, res) => {
 });
 
 // Mount API routes
-app.use('/api/auth', authRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/admin', adminRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/products', apiLimiter, productRoutes);
+app.use('/api/orders', apiLimiter, orderRoutes);
+app.use('/api/admin', apiLimiter, adminRoutes);
 
 // 404 handler for unhandled routes
 app.use(notFound);
